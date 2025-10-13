@@ -1,0 +1,83 @@
+[package]
+edition = "2024"
+name = "atsamd-usb-serial"
+version = "0.1.0"
+
+[dependencies]
+# TODO need to figure out better way to do chip selection
+atsamd-hal = {version = "0.22.2", features = ["usb"]}
+atsamd-hal-macros = "0.3.0"
+cortex-m = "0.7.7"
+featurecomb = "0.1.3"
+heapless = "0.9.1"
+usbd-serial = "0.2.2"
+
+[features]
+#-------------------------------------------------------------------------------
+# Variant features
+#-------------------------------------------------------------------------------
+
+# Each of the following features corresponds to a supported chip variant. Users
+# should select one (and only one) feature corresponding to their target chip.
+
+samd11c = ["atsamd-hal/samd11c-rt"]
+samd11d = ["atsamd-hal/samd11d-rt"]
+
+samd21e = ["atsamd-hal/samd21e-rt"]
+samd21g = ["atsamd-hal/samd21g-rt"]
+samd21j = ["atsamd-hal/samd21j-rt"]
+
+samd21el = ["atsamd-hal/samd11c-rt"]
+samd21gl = ["atsamd-hal/samd11c-rt"]
+
+samd51g = ["atsamd-hal/samd51g-rt"]
+samd51j = ["atsamd-hal/samd51j-rt"]
+samd51n = ["atsamd-hal/samd51n-rt"]
+samd51p = ["atsamd-hal/samd51p-rt"]
+
+same51g = ["atsamd-hal/same51g-rt"]
+same51j = ["atsamd-hal/same51j-rt"]
+same51n = ["atsamd-hal/same51n-rt"]
+
+same53j = ["atsamd-hal/same53j-rt"]
+same53n = ["atsamd-hal/same53n-rt"]
+
+same54n = ["atsamd-hal/same54n-rt"]
+same54p = ["atsamd-hal/same54p-rt"]
+
+#-------------------------------------------------------------------------------
+# Read buffer size features
+#-------------------------------------------------------------------------------
+
+# Each of the following features corresponds to read buffer size in bytes. Users
+# should select one (and only one) feature corresponding to the desired size.
+
+# TODO use these!
+read-buf-128 = []
+read-buf-256 = []
+read-buf-32 = []
+read-buf-512 = []
+read-buf-64 = []
+
+[package.metadata.feature-groups]
+chip-variant.exactly-one = {features = [
+  "samd11c",
+  "samd11d",
+  "samd21e",
+  "samd21g",
+  "samd21j",
+  "samd21el",
+  "samd21gl",
+  "samd51g",
+  "samd51j",
+  "samd51n",
+  "samd51p",
+  "same51g",
+  "same51j",
+  "same51n",
+  "same53j",
+  "same53n",
+  "same54n",
+  "same54p",
+]}
+read-buf.exactly-one = {features = ["read-buf-32", "read-buf-64", "read-buf-128", "read-buf-256", "read-buf-512"]}
