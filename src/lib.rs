@@ -1,9 +1,26 @@
-//! TODO
+//! Crate that provides an easy-to-use abstraction for using USB as a simple serial device on SAMD targets.
 //!
-//! TODO
+//! Due to the API design of the [`usb_device`] crate, using the USB as a serial device typically requires
+//! static variables and careful synchronization between the main thread and interrupt handlers when accessing
+//! them. The main [`UsbSerial`] struct handles these messy details and provides a safe interface.
+//!
+//! To use this crate, the SAMD chip variant feature must be enabled, identical to how this is selected when
+//! using [`atsamd_hal`] crate. Refer to the [`atsamd` project GitHub](https://github.com/atsamd-rs/atsamd?tab=readme-ov-file#pac-and-bsp---peripheral-access-crate-and-board-support-package)
+//! for the variant feature names.
+//!
+//! Additionally, a static read buffer size must be selected at compile time via one of the following features,
+//! where the number is the desired size of the buffer in bytes:
+//! - `read-buf-32`
+//! - `read-buf-64`
+//! - `read-buf-128`
+//! - `read-buf-256`
+//! - `read-buf-512`
 
 #![no_std]
 #![allow(static_mut_refs)]
+#![warn(missing_docs)]
+#![warn(rustdoc::missing_crate_level_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
 
 #[featurecomb::comb]
 mod _featurecomb {}
@@ -24,8 +41,9 @@ use usb_device::{
 };
 use usbd_serial::{SerialPort, USB_CLASS_CDC, UsbError};
 
+/// Items needed for setting up and using a [`UsbSerial`].
 pub mod prelude {
-    pub use super::{
+    pub use crate::{
         UsbSerial, UsbSerialError,
         usb_device::{
             descriptor::lang_id::LangID,
@@ -34,11 +52,16 @@ pub mod prelude {
     };
 }
 
+/// Errors that can occur when using a [`UsbSerial`].
 #[derive(Debug)]
 pub enum UsbSerialError {
+    /// The singular [`UsbSerial`] has already been setup and is in use.
     AlreadySetup,
+    /// Something went wrong when building the [`usb_device::device::UsbDevice`].
     DeviceBuilder(BuilderError),
+    /// The action could not be fully completed because the buffer is full.
     BufferFull,
+    /// The USB operation did not complete successfully.
     Usb(UsbError),
 }
 impl From<BuilderError> for UsbSerialError {
@@ -68,6 +91,7 @@ const READ_BUFFER_SIZE: usize = 256;
 #[cfg(feature = "read-buf-512")]
 const READ_BUFFER_SIZE: usize = 512;
 
+/// The USB items that need to be static, other than the allocator.
 struct UsbPackage {
     pub serial_port: SerialPort<'static, UsbBus>,
     pub usb_device: UsbDevice<'static, UsbBus>,
@@ -78,6 +102,7 @@ struct UsbPackage {
 static mut USB_ALLOCATOR: OnceCell<UsbBusAllocator<UsbBus>> = OnceCell::new();
 static mut USB_PACKAGE: OnceCell<UsbPackage> = OnceCell::new();
 
+// Singleton, backed by static variable, write buffer size.
 pub struct UsbSerial<const WRITE_BUFFER_SIZE: usize = 128> {
     write_buffer: Vec<u8, WRITE_BUFFER_SIZE>,
 }
@@ -159,9 +184,9 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
         Ok(())
     }
 
-    pub fn read(&self, data: &mut [u8]) -> usize {
-        Self::usb_free(|_| unsafe {
-            let read_buffer = &mut USB_PACKAGE.get_mut().unwrap().read_buffer;
+    pub fn read<'a>(&self, data: &'a mut [u8]) -> &'a [u8] {
+        let len = Self::usb_free(|_| {
+            let read_buffer = unsafe { &mut USB_PACKAGE.get_mut().unwrap().read_buffer };
             let copy_size = data.len().min(read_buffer.len());
 
             if copy_size > 0 {
@@ -171,7 +196,9 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
             }
 
             copy_size
-        })
+        });
+
+        &data[..len]
     }
 
     /// Borrows the global singleton `UsbSerial` for a brief period with interrupts

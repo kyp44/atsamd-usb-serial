@@ -4,7 +4,6 @@ name = "atsamd-usb-serial"
 version = "0.1.0"
 
 [dependencies]
-# TODO need to figure out better way to do chip selection
 atsamd-hal = {version = "0.22.2", features = ["usb"]}
 atsamd-hal-macros = "0.3.0"
 cortex-m = "0.7.7"
@@ -52,7 +51,6 @@ same54p = ["atsamd-hal/same54p-rt"]
 # Each of the following features corresponds to read buffer size in bytes. Users
 # should select one (and only one) feature corresponding to the desired size.
 
-# TODO use these!
 read-buf-128 = []
 read-buf-256 = []
 read-buf-32 = []
