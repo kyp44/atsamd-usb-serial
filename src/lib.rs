@@ -25,7 +25,11 @@
 #[featurecomb::comb]
 mod _featurecomb {}
 
+// Re-exports
 pub use atsamd_hal::usb::usb_device;
+#[cfg(feature = "heapless")]
+pub use heapless;
+
 use atsamd_hal::{
     pac::{self, interrupt},
     usb::UsbBus,
@@ -34,6 +38,8 @@ use atsamd_hal_macros::{hal_cfg, hal_macro_helper};
 use core::{cell::OnceCell, fmt::Write};
 use cortex_m::peripheral::NVIC;
 use heapless::{CapacityError, Vec};
+#[cfg(feature = "heapless")]
+use heapless::{VecView, string::StringView};
 use usb_device::{
     bus::UsbBusAllocator,
     device::{StringDescriptors, UsbDevice, UsbDeviceBuilder, UsbVidPid},
@@ -80,16 +86,29 @@ impl From<UsbError> for UsbSerialError {
     }
 }
 
-#[cfg(feature = "read-buf-32")]
-const READ_BUFFER_SIZE: usize = 32;
-#[cfg(feature = "read-buf-64")]
-const READ_BUFFER_SIZE: usize = 64;
-#[cfg(feature = "read-buf-128")]
-const READ_BUFFER_SIZE: usize = 128;
-#[cfg(feature = "read-buf-256")]
-const READ_BUFFER_SIZE: usize = 256;
-#[cfg(feature = "read-buf-512")]
-const READ_BUFFER_SIZE: usize = 512;
+/// Size of the static read buffer.
+pub const READ_BUFFER_SIZE: usize = {
+    #[cfg(feature = "read-buf-32")]
+    {
+        32
+    }
+    #[cfg(feature = "read-buf-64")]
+    {
+        64
+    }
+    #[cfg(feature = "read-buf-128")]
+    {
+        128
+    }
+    #[cfg(feature = "read-buf-256")]
+    {
+        256
+    }
+    #[cfg(feature = "read-buf-512")]
+    {
+        512
+    }
+};
 
 /// The USB items that need to be static, other than the allocator.
 struct UsbPackage {
@@ -102,7 +121,17 @@ struct UsbPackage {
 static mut USB_ALLOCATOR: OnceCell<UsbBusAllocator<UsbBus>> = OnceCell::new();
 static mut USB_PACKAGE: OnceCell<UsbPackage> = OnceCell::new();
 
-// Singleton, backed by static variable, write buffer size.
+/// Abstraction to use the USB as a serial device.
+///
+/// Methods are provided to read and write raw data to the serial port. This
+/// also implements
+/// This is backed by static variables to interact with the interrupt handlers,
+/// and so is a singleton.
+///
+/// TODO: What happens when the read or write buffers get full?
+///
+/// # Example
+/// TODO
 pub struct UsbSerial<const WRITE_BUFFER_SIZE: usize = 128> {
     write_buffer: Vec<u8, WRITE_BUFFER_SIZE>,
 }
@@ -184,8 +213,8 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
         Ok(())
     }
 
-    pub fn read<'a>(&self, data: &'a mut [u8]) -> &'a [u8] {
-        let len = Self::usb_free(|_| {
+    pub fn read<'a>(&self, data: &'a mut [u8]) -> usize {
+        Self::usb_free(|_| {
             let read_buffer = unsafe { &mut USB_PACKAGE.get_mut().unwrap().read_buffer };
             let copy_size = data.len().min(read_buffer.len());
 
@@ -196,9 +225,38 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
             }
 
             copy_size
-        });
+        })
+    }
 
-        &data[..len]
+    // Clears the input vec and the read buffer even if not all data could be copied
+    #[cfg(feature = "heapless")]
+    pub fn read_vec(&self, vec: &mut VecView<u8>) -> Result<(), UsbSerialError> {
+        vec.clear();
+        Self::usb_free(|_| {
+            let read_buffer = unsafe { &mut USB_PACKAGE.get_mut().unwrap().read_buffer };
+            vec.extend_from_slice(read_buffer)?;
+
+            read_buffer.clear();
+
+            Ok(())
+        })
+    }
+
+    // Clears the input str and the read buffer even if not all data could be copied
+    // First part that valid utf8
+    #[cfg(feature = "heapless")]
+    pub fn read_string(&self, string: &mut StringView) -> Result<(), UsbSerialError> {
+        string.clear();
+        Self::usb_free(|_| {
+            let read_buffer = unsafe { &mut USB_PACKAGE.get_mut().unwrap().read_buffer };
+            let s = str::from_utf8(&read_buffer)
+                .unwrap_or_else(|e| str::from_utf8(&read_buffer[..e.valid_up_to()]).unwrap());
+            string.push_str(s)?;
+
+            read_buffer.clear();
+
+            Ok(())
+        })
     }
 
     /// Borrows the global singleton `UsbSerial` for a brief period with interrupts
@@ -263,6 +321,7 @@ impl<const WRITE_BUFFER_SIZE: usize> Write for UsbSerial<WRITE_BUFFER_SIZE> {
     }
 }
 
+// TODO
 fn poll_usb() {
     unsafe {
         if let Some(package) = USB_PACKAGE.get_mut() {
