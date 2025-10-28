@@ -15,6 +15,9 @@
 //! - `read-buf-128`
 //! - `read-buf-256`
 //! - `read-buf-512`
+//!
+//! Enable the `heapless` feature to add additional methods to [`UsbSerial`] that are easier to use but depend
+//! on the [`heapless`] crate, which is also re-exported.
 
 #![no_std]
 #![allow(static_mut_refs)]
@@ -46,6 +49,9 @@ use usb_device::{
     prelude::BuilderError,
 };
 use usbd_serial::{SerialPort, USB_CLASS_CDC, UsbError};
+
+mod heapless_ext;
+use heapless_ext::VecExt;
 
 /// Items needed for setting up and using a [`UsbSerial`].
 pub mod prelude {
@@ -363,4 +369,46 @@ fn USB_TRCPT1() {
 #[interrupt]
 fn USB() {
     poll_usb();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use heapless::String;
+
+    /// Verifies that overfilling a heapless [`Vec`] still fills up the buffer then stops
+    /// when it gets full.
+    #[test]
+    fn heapless_vec() {
+        const SIZE: usize = 20;
+        let mut vec: Vec<u8, SIZE> = Vec::new();
+        let mut data = [0; SIZE + 1];
+
+        // Fill the data.
+        for n in 0..data.len() {
+            data[n] = n as u8;
+        }
+
+        // Add data the the vec
+        assert!(vec.extend_from_slice_until_full(&data).is_err());
+        assert_eq!(vec, data[..SIZE]);
+    }
+
+    /// Verifies that overfilling a heapless [`String`] still fills up the buffer then stops
+    /// when it gets full.
+    #[test]
+    fn heapless_string() {
+        const SIZE: usize = 20;
+        let mut string: String<SIZE> = String::new();
+        let mut data = [0; SIZE + 1];
+
+        // Fill the data.
+        for n in 0..data.len() {
+            data[n] = n as u8;
+        }
+
+        // Add data the the vec
+        assert!(vec.extend_from_slice_until_full(&data).is_err());
+        assert_eq!(vec, data[..SIZE]);
+    }
 }
