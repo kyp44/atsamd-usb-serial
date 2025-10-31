@@ -1,23 +1,27 @@
-//! Crate that provides an easy-to-use abstraction for using USB as a simple serial device on SAMD targets.
+//! Crate that provides an easy-to-use abstraction for using USB as a simple
+//! serial device on SAMD targets.
 //!
-//! Due to the API design of the [`usb_device`] crate, using the USB as a serial device typically requires
-//! static variables and careful synchronization between the main thread and interrupt handlers when accessing
-//! them. The main [`UsbSerial`] struct handles these messy details and provides a safe interface.
+//! Due to the API design of the [`usb_device`] crate, using the USB as a serial
+//! device typically requires static variables and careful synchronization
+//! between the main thread and interrupt handlers when accessing them. The main
+//! [`UsbSerial`] struct handles these messy details and provides a safe
+//! interface. This crate also implements the USB interrupt handlers so that
+//! these should not be implemented manually.
 //!
-//! To use this crate, the SAMD chip variant feature must be enabled, identical to how this is selected when
-//! using [`atsamd_hal`] crate. Refer to the [`atsamd` project GitHub](https://github.com/atsamd-rs/atsamd?tab=readme-ov-file#pac-and-bsp---peripheral-access-crate-and-board-support-package)
-//! for the variant feature names.
+//! To use this crate, the SAMD chip variant feature must be enabled, identical to how this is selected when using [`atsamd_hal`] crate. Refer to the [`atsamd` project GitHub](https://github.com/atsamd-rs/atsamd?tab=readme-ov-file#pac-and-bsp---peripheral-access-crate-and-board-support-package) for the variant feature names.
 //!
-//! Additionally, a static read buffer size must be selected at compile time via one of the following features,
-//! where the number is the desired size of the buffer in bytes:
+//! Additionally, a static read buffer size must be selected at compile time via
+//! one of the following features, where the number is the desired size of the
+//! buffer in bytes:
 //! - `read-buf-32`
 //! - `read-buf-64`
 //! - `read-buf-128`
 //! - `read-buf-256`
 //! - `read-buf-512`
 //!
-//! Enable the `heapless` feature to add additional methods to [`UsbSerial`] that are easier to use but depend
-//! on the [`heapless`] crate, which is also re-exported.
+//! Enable the `heapless` feature to add additional methods to [`UsbSerial`]
+//! that are easier to use but depend on the [`heapless`] crate, which is also
+//! re-exported.
 
 #![no_std]
 #![allow(static_mut_refs)]
@@ -40,7 +44,7 @@ use atsamd_hal::{
 use atsamd_hal_macros::{hal_cfg, hal_macro_helper};
 use core::{cell::OnceCell, fmt::Write};
 use cortex_m::peripheral::NVIC;
-use heapless::{CapacityError, Vec};
+use heapless::Vec;
 #[cfg(feature = "heapless")]
 use heapless::{VecView, string::StringView};
 use usb_device::{
@@ -51,6 +55,8 @@ use usb_device::{
 use usbd_serial::{SerialPort, USB_CLASS_CDC, UsbError};
 
 mod heapless_ext;
+#[cfg(feature = "heapless")]
+use heapless_ext::StringExt;
 use heapless_ext::VecExt;
 
 /// Items needed for setting up and using a [`UsbSerial`].
@@ -69,21 +75,19 @@ pub mod prelude {
 pub enum UsbSerialError {
     /// The singular [`UsbSerial`] has already been setup and is in use.
     AlreadySetup,
-    /// Something went wrong when building the [`usb_device::device::UsbDevice`].
+    /// Something went wrong when building the
+    /// [`usb_device::device::UsbDevice`].
     DeviceBuilder(BuilderError),
     /// The action could not be fully completed because the buffer is full.
-    BufferFull,
+    ///
+    /// This contains the number of items written to the buffer.
+    BufferFull(usize),
     /// The USB operation did not complete successfully.
     Usb(UsbError),
 }
 impl From<BuilderError> for UsbSerialError {
     fn from(value: BuilderError) -> Self {
         Self::DeviceBuilder(value)
-    }
-}
-impl From<CapacityError> for UsbSerialError {
-    fn from(_value: CapacityError) -> Self {
-        Self::BufferFull
     }
 }
 impl From<UsbError> for UsbSerialError {
@@ -130,9 +134,10 @@ static mut USB_PACKAGE: OnceCell<UsbPackage> = OnceCell::new();
 /// Abstraction to use the USB as a serial device.
 ///
 /// Methods are provided to read and write raw data to the serial port. This
-/// also implements
-/// This is backed by static variables to interact with the interrupt handlers,
-/// and so is a singleton.
+/// also implements TODO? WRITEBUFFER_SIZE. This is backed by static variables
+/// to interact with the interrupt handlers, and so is a singleton.
+///
+/// TODO: Explain read buffer.
 ///
 /// TODO: What happens when the read or write buffers get full?
 ///
@@ -142,6 +147,15 @@ pub struct UsbSerial<const WRITE_BUFFER_SIZE: usize = 128> {
     write_buffer: Vec<u8, WRITE_BUFFER_SIZE>,
 }
 impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
+    /// Creates a new USB serial device with the specified `bus_allocator`,
+    /// `descriptors`, and `vid_pid`.
+    ///
+    /// The interrupt handler will always echo back anything it receives if
+    /// `echo` is `true` and will never do so if it is `false`. This also
+    /// enables the appropriate USB interrupts for the SAMD variant, which is
+    /// why `nvic` is required. As [`UsbSerial`] is a singleton backed by static
+    /// data, this returns an [`Err`] with [`UsbSerialError::AlreadySetup`] if
+    /// this has already been called and the device already created.
     #[hal_macro_helper]
     pub fn new(
         nvic: &mut pac::NVIC,
@@ -195,14 +209,29 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
         })
     }
 
-    // Ensures all bytes written
+    /// Writes raw bytes into the write buffer.
+    ///
+    /// This will return an [`Err`] with [`UsbSerialError::BufferFull`]
+    /// containing the number of bytes written if not all the data could be
+    /// written due to the write buffer filling up. In this case, as much
+    /// data was written to the buffer as possible so that it will be
+    /// completely full.
+    ///
+    /// Data will not be written the serial device until [`UsbSerial::flush`] is
+    /// called.
     #[inline]
     pub fn write(&mut self, data: &[u8]) -> Result<(), UsbSerialError> {
-        self.write_buffer.extend_from_slice(data)?;
-
-        Ok(())
+        self.write_buffer
+            .extend_from_slice_until_full(data)
+            .map_err(|n| UsbSerialError::BufferFull(n))
     }
 
+    /// Flushes the write buffer, writing out all data to the serial device.
+    ///
+    /// After flushing, this clears the write buffer. If there was an issue
+    /// writing to the serial device, this will return an [`Err`] with
+    /// [`UsbSerialError::Usb`] containing the specific [`UsbError`] and the
+    /// write buffer will not be cleared.
     pub fn flush(&mut self) -> Result<(), UsbSerialError> {
         // Ensure that all bytes are written
         Self::serial_get(|serial| -> Result<(), UsbError> {
@@ -219,6 +248,13 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
         Ok(())
     }
 
+    /// Reads raw bytes from the read buffer into the `data` buffer.
+    ///
+    /// After copying the data, the read buffer will be totally cleared, even if
+    /// not all of its data could be copied into `data` due to `data` being too
+    /// small. This can be avoided if `data` is at least as as large as
+    /// [`READ_BUFFER_SIZE`]. Returns the number of bytes copied, which will be
+    /// `0` if no data was available.
     pub fn read<'a>(&self, data: &'a mut [u8]) -> usize {
         Self::usb_free(|_| {
             let read_buffer = unsafe { &mut USB_PACKAGE.get_mut().unwrap().read_buffer };
@@ -234,47 +270,68 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
         })
     }
 
-    // Clears the input vec and the read buffer even if not all data could be copied
+    /// Appends raw bytes from the read buffer to `vec`.
+    ///
+    /// After copying the data, the read buffer will be totally cleared, even if
+    /// not all of its data could be copied into `vec` due to `vec` not having
+    /// enough capacity. In this case an [`Err`] will be returned with
+    /// [`UsbSerialError::BufferFull`] containing the number of bytes copied.
+    /// This can be avoided if `vec` is at least as as large as
+    /// [`READ_BUFFER_SIZE`].
+    ///
+    /// If [`Ok`] is returned, it will contain whether or not data was available
+    /// in the read buffer.
     #[cfg(feature = "heapless")]
-    pub fn read_vec(&self, vec: &mut VecView<u8>) -> Result<(), UsbSerialError> {
-        vec.clear();
+    pub fn read_vec(&self, vec: &mut VecView<u8>) -> Result<bool, UsbSerialError> {
         Self::usb_free(|_| {
             let read_buffer = unsafe { &mut USB_PACKAGE.get_mut().unwrap().read_buffer };
-            vec.extend_from_slice(read_buffer)?;
-
+            let res = vec
+                .extend_from_slice_until_full(read_buffer)
+                .map_err(|n| UsbSerialError::BufferFull(n))
+                .map(|_| !read_buffer.is_empty());
             read_buffer.clear();
 
-            Ok(())
+            res
         })
     }
 
-    // Clears the input str and the read buffer even if not all data could be copied
-    // First part that valid utf8
+    /// Appends a string from the read buffer to `string`.
+    ///
+    /// After copying the data, the read buffer will be totally cleared, even if
+    /// not all of its data could be appended to `string`. If `string`
+    /// does not have sufficient capacity, an [`Err`] will be returned with
+    /// [`UsbSerialError::BufferFull`] containing the number of UTF8 characters
+    /// copied. This can be avoided if `string` is at least as as large as
+    /// [`READ_BUFFER_SIZE`]. The read buffer will only be appended for as long
+    /// as it contains valid UTF8.
+    ///
+    /// If [`Ok`] is returned, it will contain whether or not data was available
+    /// in the read buffer.
     #[cfg(feature = "heapless")]
-    pub fn read_string(&self, string: &mut StringView) -> Result<(), UsbSerialError> {
-        string.clear();
+    pub fn read_string(&self, string: &mut StringView) -> Result<bool, UsbSerialError> {
         Self::usb_free(|_| {
             let read_buffer = unsafe { &mut USB_PACKAGE.get_mut().unwrap().read_buffer };
-            let s = str::from_utf8(&read_buffer)
-                .unwrap_or_else(|e| str::from_utf8(&read_buffer[..e.valid_up_to()]).unwrap());
-            string.push_str(s)?;
+            let res = string
+                .push_raw_buffer_until_full(read_buffer)
+                .map_err(|n| UsbSerialError::BufferFull(n));
 
             read_buffer.clear();
 
-            Ok(())
+            res
         })
     }
 
-    /// Borrows the global singleton `UsbSerial` for a brief period with interrupts
-    /// disabled
+    /// Borrows the global singleton `UsbSerial` for a brief period with
+    /// interrupts disabled
     ///
     /// # Arguments
     /// `borrower`: The closure that gets run borrowing the global `UsbSerial`
     ///
     /// # Safety
-    /// the global singleton `UsbSerial` can be safely borrowed because we disable
-    /// interrupts while it is being borrowed, guaranteeing that interrupt handlers
-    /// like `USB` cannot mutate `UsbSerial` while we are as well.
+    /// the global singleton `UsbSerial` can be safely borrowed because we
+    /// disable interrupts while it is being borrowed, guaranteeing that
+    /// interrupt handlers like `USB` cannot mutate `UsbSerial` while we are
+    /// as well.
     ///
     /// # Panic
     /// If `init` has not been called and we haven't initialized our global
@@ -369,46 +426,4 @@ fn USB_TRCPT1() {
 #[interrupt]
 fn USB() {
     poll_usb();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use heapless::String;
-
-    /// Verifies that overfilling a heapless [`Vec`] still fills up the buffer then stops
-    /// when it gets full.
-    #[test]
-    fn heapless_vec() {
-        const SIZE: usize = 20;
-        let mut vec: Vec<u8, SIZE> = Vec::new();
-        let mut data = [0; SIZE + 1];
-
-        // Fill the data.
-        for n in 0..data.len() {
-            data[n] = n as u8;
-        }
-
-        // Add data the the vec
-        assert!(vec.extend_from_slice_until_full(&data).is_err());
-        assert_eq!(vec, data[..SIZE]);
-    }
-
-    /// Verifies that overfilling a heapless [`String`] still fills up the buffer then stops
-    /// when it gets full.
-    #[test]
-    fn heapless_string() {
-        const SIZE: usize = 20;
-        let mut string: String<SIZE> = String::new();
-        let mut data = [0; SIZE + 1];
-
-        // Fill the data.
-        for n in 0..data.len() {
-            data[n] = n as u8;
-        }
-
-        // Add data the the vec
-        assert!(vec.extend_from_slice_until_full(&data).is_err());
-        assert_eq!(vec, data[..SIZE]);
-    }
 }
