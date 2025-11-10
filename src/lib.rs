@@ -133,10 +133,12 @@ static mut USB_PACKAGE: OnceCell<UsbPackage> = OnceCell::new();
 
 /// Abstraction to use the USB as a serial device.
 ///
-/// Methods are provided to read and write raw data to the serial port. This
-/// also implements TODO? WRITEBUFFER_SIZE. This is backed by static variables
-/// to interact with the interrupt handlers, and so is a singleton.
+/// Methods are provided to read and write raw data to the serial port.
+/// Enabling the `heapless` feature will add additional methods that make
+/// reading and writing more convenient.
 ///
+/// This is backed by static variables to interact with the interrupt handlers,
+/// and so is a singleton. It also features read and write buffers
 /// TODO: Explain read buffer.
 ///
 /// TODO: What happens when the read or write buffers get full?

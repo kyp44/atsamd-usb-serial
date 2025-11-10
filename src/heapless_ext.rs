@@ -66,13 +66,23 @@ mod tests {
         }
 
         // Add data the the vec and verify we tried to copy too much
-        // TODO: Verify bytes copied
-        assert!(vec.extend_from_slice_until_full(&data).is_err());
+        assert_eq!(vec.extend_from_slice_until_full(&data), Err(SIZE));
         // Verify that the enough data was copied to fill the vec
         assert_eq!(vec, data[..SIZE]);
 
-        // TODO: Verify smaller vec and num items returned
-        // TODO: Verify empty vec
+        // Verify smaller vec
+        const SMALL_SIZE: usize = SIZE - 5;
+        vec.clear();
+        assert_eq!(
+            vec.extend_from_slice_until_full(&data[..SMALL_SIZE]),
+            Ok(()),
+        );
+        assert_eq!(vec, data[..SMALL_SIZE]);
+
+        // Verify that an empty vec
+        vec.clear();
+        assert_eq!(vec.extend_from_slice_until_full(&data[..0]), Ok(()),);
+        assert!(vec.is_empty());
     }
 
     #[test]
@@ -88,20 +98,58 @@ mod tests {
         let data = str::from_utf8(&data).unwrap();
 
         // Add data the the string and verify we tried to copy too much
-        // TODO: Verify characters copied
-        assert!(string.push_str_until_full(data).is_err());
+        assert_eq!(string.push_str_until_full(data), Err(SIZE));
         // Verify that the enough data was copied to fill the string
         assert_eq!(string, data[..SIZE]);
 
-        // TODO: Verify smaller string and num items returned
-        // TODO: Verify empty string
+        // Verify smaller string
+        const SMALL_SIZE: usize = SIZE - 5;
+        string.clear();
+        assert_eq!(string.push_str_until_full(&data[..SMALL_SIZE]), Ok(()));
+        assert_eq!(string, data[..SMALL_SIZE]);
+
+        // Verify that the empty string appends nothing
+        assert_eq!(string.push_str_until_full(""), Ok(()));
+        assert_eq!(string, data[..SMALL_SIZE]);
     }
 
     // TODO
     #[test]
     fn string_push_raw_buffer_until_full() {
-        // TODO: Verify everything in string_push_str_until_full
-        // TODO: Verify partially valid UTF8
-        panic!();
+        const SIZE: usize = 20;
+        let mut string: String<SIZE> = String::new();
+        let mut data = [0; SIZE + 1];
+
+        // Fill the data with the alphabet and make it a string
+        for n in 0..data.len() {
+            data[n] = 'A' as u8 + n as u8;
+        }
+
+        // Add data the the string and verify we tried to copy too much
+        assert_eq!(string.push_raw_buffer_until_full(&data), Err(SIZE));
+        // Verify that the enough data was copied to fill the string
+        assert_eq!(string, str::from_utf8(&data[..SIZE]).unwrap());
+
+        // Verify smaller string
+        const SMALL_SIZE: usize = SIZE - 5;
+        string.clear();
+        assert_eq!(
+            string.push_raw_buffer_until_full(&data[..SMALL_SIZE]),
+            Ok(true)
+        );
+        assert_eq!(string, str::from_utf8(&data[..SMALL_SIZE]).unwrap());
+
+        // Verify empty string
+        string.clear();
+        assert_eq!(string.push_str_until_full(""), Ok(()));
+        assert!(string.is_empty());
+
+        // Verify partially valid UTF8 byt first invaliding the data.
+        string.clear();
+        for n in SMALL_SIZE..SIZE {
+            data[n] = 0x80;
+        }
+        assert_eq!(string.push_raw_buffer_until_full(&data), Ok(true));
+        let data_str = str::from_utf8(&data).unwrap();
     }
 }
