@@ -135,16 +135,40 @@ static mut USB_PACKAGE: OnceCell<UsbPackage> = OnceCell::new();
 ///
 /// Methods are provided to read and write raw data to the serial port.
 /// Enabling the `heapless` feature will add additional methods that make
-/// reading and writing more convenient.
+/// reading and writing more convenient. It also implement [`core::fmt::Write`]
+/// for writing strings and formatted text.
 ///
 /// This is backed by static variables to interact with the interrupt handlers,
-/// and so is a singleton. It also features read and write buffers
-/// TODO: Explain read buffer.
-///
-/// TODO: What happens when the read or write buffers get full?
+/// and so is a singleton. It also features a static read buffer and a local
+/// write buffer. As such, the read buffer size is specified by a crate feature
+/// (see the [crate documentation](crate)), which is accessible with
+/// [READ_BUFFER_SIZE]. The write buffer is is specified via the `const`
+/// generic `WRITE_BUFFER_SIZE`.
 ///
 /// # Example
-/// TODO
+/// ```
+/// use usb_serial::prelude::*;
+///
+/// let usb_allocator = ...;
+/// let mut usb_serial: UsbSerial<64> = UsbSerial::new(
+///     nvic,
+///     usb_allocator,
+///     StringDescriptors::new(LangID::EN)
+///           .manufacturer("Your company")
+///           .product("Serial port")
+///           .serial_number("TEST"),
+///     UsbVidPid(0x16c0, 0x27dd),
+///     true,
+/// ).unwrap();
+///
+/// // Wait until something is received
+/// while usb_serial.read(&mut [0u8; 1]) < 0 {
+///     // Maybe just delay here
+/// }
+///
+/// // Write some raw bytes
+/// assert_eq!(usb_serial.write(&[0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x21]),
+/// ```
 pub struct UsbSerial<const WRITE_BUFFER_SIZE: usize = 128> {
     write_buffer: Vec<u8, WRITE_BUFFER_SIZE>,
 }
@@ -160,7 +184,7 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
     /// this has already been called and the device already created.
     #[hal_macro_helper]
     pub fn new(
-        nvic: &mut pac::NVIC,
+        nvic: &mut NVIC,
         bus_allocator: UsbBusAllocator<UsbBus>,
         descriptors: StringDescriptors<'static>,
         vid_pid: UsbVidPid,
@@ -211,7 +235,7 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
         })
     }
 
-    /// Writes raw bytes into the write buffer.
+    /// Appends raw bytes to the write buffer.
     ///
     /// This will return an [`Err`] with [`UsbSerialError::BufferFull`]
     /// containing the number of bytes written if not all the data could be
@@ -219,13 +243,14 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
     /// data was written to the buffer as possible so that it will be
     /// completely full.
     ///
-    /// Data will not be written the serial device until [`UsbSerial::flush`] is
-    /// called.
+    /// Data will not be written to the serial device until [`UsbSerial::flush`]
+    /// is called.
     #[inline]
     pub fn write(&mut self, data: &[u8]) -> Result<(), UsbSerialError> {
         self.write_buffer
             .extend_from_slice_until_full(data)
             .map_err(|n| UsbSerialError::BufferFull(n))
+            .map(|_| ())
     }
 
     /// Flushes the write buffer, writing out all data to the serial device.
@@ -233,7 +258,7 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
     /// After flushing, this clears the write buffer. If there was an issue
     /// writing to the serial device, this will return an [`Err`] with
     /// [`UsbSerialError::Usb`] containing the specific [`UsbError`] and the
-    /// write buffer will not be cleared.
+    /// write buffer will **not** be cleared.
     pub fn flush(&mut self) -> Result<(), UsbSerialError> {
         // Ensure that all bytes are written
         Self::serial_get(|serial| -> Result<(), UsbError> {
@@ -281,16 +306,15 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
     /// This can be avoided if `vec` is at least as as large as
     /// [`READ_BUFFER_SIZE`].
     ///
-    /// If [`Ok`] is returned, it will contain whether or not data was available
-    /// in the read buffer.
+    /// If [`Ok`] is returned, it will contain the number of bytes copied, which
+    /// will be `0` if no data was available.
     #[cfg(feature = "heapless")]
-    pub fn read_vec(&self, vec: &mut VecView<u8>) -> Result<bool, UsbSerialError> {
+    pub fn read_vec(&self, vec: &mut VecView<u8>) -> Result<usize, UsbSerialError> {
         Self::usb_free(|_| {
             let read_buffer = unsafe { &mut USB_PACKAGE.get_mut().unwrap().read_buffer };
             let res = vec
                 .extend_from_slice_until_full(read_buffer)
-                .map_err(|n| UsbSerialError::BufferFull(n))
-                .map(|_| !read_buffer.is_empty());
+                .map_err(|n| UsbSerialError::BufferFull(n));
             read_buffer.clear();
 
             res
@@ -307,10 +331,10 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
     /// [`READ_BUFFER_SIZE`]. The read buffer will only be appended for as long
     /// as it contains valid UTF8.
     ///
-    /// If [`Ok`] is returned, it will contain whether or not data was available
-    /// in the read buffer.
+    /// If [`Ok`] is returned, it will contain the number of UTF8 characters
+    /// copied, which will be `0` if no data was available.
     #[cfg(feature = "heapless")]
-    pub fn read_string(&self, string: &mut StringView) -> Result<bool, UsbSerialError> {
+    pub fn read_string(&self, string: &mut StringView) -> Result<usize, UsbSerialError> {
         Self::usb_free(|_| {
             let read_buffer = unsafe { &mut USB_PACKAGE.get_mut().unwrap().read_buffer };
             let res = string
@@ -380,13 +404,16 @@ impl<const WRITE_BUFFER_SIZE: usize> UsbSerial<WRITE_BUFFER_SIZE> {
         r
     }
 }
+
+/// Writing using these methods or write with formatted text using macros will
+/// append to the write buffer, and not actually write to the serial device
+/// until [`flush`](UsbSerial::flush) is called.
 impl<const WRITE_BUFFER_SIZE: usize> Write for UsbSerial<WRITE_BUFFER_SIZE> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.write_buffer.write_str(s)
     }
 }
 
-// TODO
 fn poll_usb() {
     unsafe {
         if let Some(package) = USB_PACKAGE.get_mut() {
@@ -396,8 +423,10 @@ fn poll_usb() {
             if let Ok(count) = package.serial_port.read(&mut buf)
                 && count > 0
             {
+                // Add read data to the read buffer
                 let _ = package.read_buffer.extend_from_slice(&buf[..count]);
 
+                // Echo the data back if set
                 if package.echo {
                     package.serial_port.write(&buf[..count]).unwrap();
                 }
