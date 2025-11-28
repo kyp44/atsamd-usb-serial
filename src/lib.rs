@@ -149,7 +149,7 @@ static mut USB_PACKAGE: OnceCell<UsbPackage> = OnceCell::new();
 /// ```
 /// use usb_serial::prelude::*;
 ///
-/// let usb_allocator = ...;
+/// let usb_allocator = get_allocator();
 /// let mut usb_serial: UsbSerial<64> = UsbSerial::new(
 ///     nvic,
 ///     usb_allocator,
@@ -167,7 +167,7 @@ static mut USB_PACKAGE: OnceCell<UsbPackage> = OnceCell::new();
 /// }
 ///
 /// // Write some raw bytes
-/// assert_eq!(usb_serial.write(&[0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x21]),
+/// assert_eq!(usb_serial.write(&[0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x21])),
 /// ```
 pub struct UsbSerial<const WRITE_BUFFER_SIZE: usize = 128> {
     write_buffer: Vec<u8, WRITE_BUFFER_SIZE>,
